@@ -8,6 +8,7 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
+from pydantic import BaseModel
 
 from app.schemas import ActionPayload, ActionResult, EntryPayload, PageResult
 from app.services.data_pipeline import DataPipelineService
@@ -46,6 +47,63 @@ def export_entries() -> StreamingResponse:
                              headers={"Content-Disposition": "attachment; filename=data_pipeline.csv"})
 
 
+class ExecuteDagBody(BaseModel):
+    policy: str = "continue_branch"
+
+
+class FailureSimBody(BaseModel):
+    enabled: bool
+
+
+@router.get("/joint/states")
+def list_pipeline_states() -> list[dict[str, Any]]:
+    """查询流水线段执行状态记录（每段一条，按段幂等更新）。"""
+    return pipeline_executor.list_states()
+
+
+@router.get("/joint/runs")
+def list_pipeline_runs() -> list[dict[str, Any]]:
+    """查询有序流水线执行记录数据集。"""
+    return pipeline_executor.list_runs()
+
+
+@router.get("/execution-overview")
+def execution_overview() -> dict[str, Any]:
+    """页面用综合视图：已完成段、受阻段、可继续分支与结果批次。"""
+    return pipeline_executor.execution_overview()
+
+
+@router.get("/sync-checklist")
+def sync_checklist() -> dict[str, Any]:
+    """跨模块入口同步清单。"""
+    return pipeline_executor.sync_checklist()
+
+
+@router.post("/execute-dag")
+def execute_dag(payload: ExecuteDagBody | None = None) -> dict[str, Any]:
+    """按依赖关系执行整图：读取依赖段、既有批次与执行记录后按拓扑分层执行。"""
+    policy = payload.policy if payload else "continue_branch"
+    res = pipeline_executor.execute_dag(policy=policy)
+    if "error" in res:
+        raise HTTPException(status_code=400, detail=res.get("error"))
+    return res
+
+
+@router.post("/resume")
+def resume_pipeline(payload: ExecuteDagBody | None = None) -> dict[str, Any]:
+    """失败段中断后从可继续分支续做，重复提交只写入一次执行记录。"""
+    policy = payload.policy if payload else "continue_branch"
+    res = pipeline_executor.resume(policy=policy)
+    if "error" in res:
+        raise HTTPException(status_code=400, detail=res.get("error"))
+    return res
+
+
+@router.post("/reset")
+def reset_pipeline() -> dict[str, Any]:
+    return pipeline_executor.reset_all()
+
+
 @router.get("/{entry_id}")
 def get_entry(entry_id: int) -> dict:
     entry = service.get_entry(entry_id)
@@ -72,17 +130,14 @@ def run_action(entry_id: int, payload: ActionPayload) -> ActionResult:
 
 @router.post("/{entry_id}/execute")
 def execute_segment(entry_id: int) -> dict[str, Any]:
-    """执行流水线段，将结果批次写入采集仓储。"""
+    """执行流水线段，将结果批次写入采集仓储；依赖未满足时返回阻断关系。"""
     return pipeline_executor.execute_segment(entry_id)
 
 
-@router.post("/execute-dag")
-def execute_dag() -> dict[str, Any]:
-    """按DAG顺序执行所有待编排流水线段。"""
-    return pipeline_executor.execute_dag()
-
-
-@router.get("/joint/states")
-def list_pipeline_states() -> list[dict[str, Any]]:
-    """查询流水线执行状态记录。"""
-    return pipeline_executor.list_states()
+@router.post("/{entry_id}/failure-simulation")
+def set_failure_simulation(entry_id: int, payload: FailureSimBody) -> ActionResult:
+    """开关某段的失败注入，用于演示失败分支与执行边界策略。"""
+    entry, message = service.set_failure_simulation(entry_id, payload.enabled)
+    if entry is None:
+        return ActionResult(ok=False, message=message)
+    return ActionResult(ok=True, message=message, entry=entry)

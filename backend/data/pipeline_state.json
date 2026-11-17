@@ -1,13 +1,1 @@
-[
-  {
-    "id": 1,
-    "segment_id": 1,
-    "batch_id": 4,
-    "status": "已完成",
-    "raw_rows": 150,
-    "valid_rows": 147,
-    "checksum": "bbfc90312ba9b340",
-    "started_at": "2026-11-16 10:57:45",
-    "finished_at": "2026-11-16 10:57:45"
-  }
-]
+[]

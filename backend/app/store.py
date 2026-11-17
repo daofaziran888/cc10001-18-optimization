@@ -20,7 +20,8 @@ class Store:
         }
         # 联合存储表：跨模块数据流的持久化产物
         self._joint: dict[str, list[dict[str, Any]]] = {
-            "pipeline_state": [],      # 流水线执行状态与产物
+            "pipeline_state": [],      # 流水线段执行状态（每段唯一，按 segment_id 幂等更新）
+            "pipeline_runs": [],       # 有序流水线执行记录（每次提交一个运行单）
             "audit_records": [],       # 质量审计记录
             "sync_positions": [],      # 增量同步水位
             "dispatch_logs": [],       # 数据分发日志
@@ -79,9 +80,11 @@ class Store:
         ]
         # 跨模块数据流统计
         pipeline_runs = len(self._joint.get("pipeline_state", []))
+        run_records = len(self._joint.get("pipeline_runs", []))
         audit_count = len(self._joint.get("audit_records", []))
         dispatch_count = len(self._joint.get("dispatch_logs", []))
         cards.append({"label": "流水线执行", "value": pipeline_runs})
+        cards.append({"label": "执行记录", "value": run_records})
         cards.append({"label": "审计记录", "value": audit_count})
         cards.append({"label": "分发日志", "value": dispatch_count})
         return {"cards": cards, "modules": modules}
@@ -99,6 +102,27 @@ class Store:
             if int(row.get("id", 0)) == record_id:
                 return row
         return None
+
+    def joint_next_id(self, key: str) -> int:
+        return max((int(row.get("id", 0)) for row in self.joint_rows(key)), default=0) + 1
+
+    def joint_upsert(self, key: str, match_field: str, record: dict[str, Any]) -> tuple[dict[str, Any], bool]:
+        """按业务键幂等写入：同键记录原地更新而不是追加，返回 (记录, 是否新建)。
+
+        竞态提交同一业务键时只会留下一个版本，避免重复执行记录与重复结果批次。
+        """
+        rows = self.joint_rows(key)
+        match_value = record.get(match_field)
+        for row in rows:
+            if row.get(match_field) == match_value:
+                row.update(record)
+                self._save_joint(key)
+                return row, False
+        if "id" not in record:
+            record = {**record, "id": self.joint_next_id(key)}
+        rows.append(record)
+        self._save_joint(key)
+        return record, True
 
     def joint_clear(self, key: str) -> None:
         self._joint[key] = []

@@ -19,6 +19,10 @@ class ExecuteSegmentPayload(BaseModel):
     segment_id: int
 
 
+class ExecuteDagPayload(BaseModel):
+    policy: str = "continue_branch"
+
+
 class TriggerPlanPayload(BaseModel):
     plan_id: int
     simulate_failure: bool = False
@@ -56,8 +60,23 @@ def execute_segment(payload: ExecuteSegmentPayload) -> dict:
 
 
 @router.post("/pipeline/execute-dag")
-def execute_dag() -> dict:
-    return pipeline_executor.execute_dag()
+def execute_dag(payload: ExecuteDagPayload | None = None) -> dict:
+    """按 DAG 依赖约束执行整图，policy 选择失败时的执行边界策略。"""
+    policy = payload.policy if payload else "continue_branch"
+    res = pipeline_executor.execute_dag(policy=policy)
+    if "error" in res:
+        raise HTTPException(status_code=400, detail=res.get("error"))
+    return res
+
+
+@router.post("/pipeline/resume")
+def resume_pipeline(payload: ExecuteDagPayload | None = None) -> dict:
+    """失败中断后从可继续分支续做，已完成段幂等复用。"""
+    policy = payload.policy if payload else "continue_branch"
+    res = pipeline_executor.resume(policy=policy)
+    if "error" in res:
+        raise HTTPException(status_code=400, detail=res.get("error"))
+    return res
 
 
 @router.get("/pipeline/states")
@@ -71,6 +90,37 @@ def get_pipeline_state(state_id: int) -> dict:
     if state is None:
         raise HTTPException(status_code=404, detail=f"状态 {state_id} 不存在")
     return state
+
+
+@router.get("/pipeline/runs")
+def list_pipeline_runs() -> list:
+    """有序流水线执行记录数据集。"""
+    return pipeline_executor.list_runs()
+
+
+@router.get("/pipeline/runs/{run_id}")
+def get_pipeline_run(run_id: int) -> dict:
+    run = pipeline_executor.get_run(run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail=f"执行记录 {run_id} 不存在")
+    return run
+
+
+@router.get("/pipeline/execution-overview")
+def execution_overview() -> dict:
+    """页面综合视图：段、有序执行记录、结果批次、阻断关系与可继续分支。"""
+    return pipeline_executor.execution_overview()
+
+
+@router.get("/pipeline/sync-checklist")
+def sync_checklist() -> dict:
+    """跨模块入口同步清单：段/执行状态/结果批次/执行记录一致性核对。"""
+    return pipeline_executor.sync_checklist()
+
+
+@router.post("/pipeline/reset")
+def reset_pipeline() -> dict:
+    return pipeline_executor.reset_all()
 
 
 # ---------- 调度引擎 ----------
